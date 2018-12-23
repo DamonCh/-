@@ -1,0 +1,169 @@
+%% 股指掉期套利  （简单复利计算利率）
+%% 提取和保存数据
+clear; 
+clc;
+load datas.mat
+load dates.mat
+load codes.mat
+dweek=weekday(dates);
+
+%% 计算贴现率r
+data=[datas(:,3),datas(:,1)];
+R_data=data(:,1:2);
+len=round(1/3*size(R_data,1));  
+trainingData=R_data(1:len,:);
+r=zeros(len,1);
+for i=1:len
+    R(i)=power(trainingData(i,2)/trainingData(i,1),1/30);
+end
+t=[1:len];
+format long
+r=mean(R);
+
+
+
+t1=datetime(dates(len:end,:));
+data=[datenum(t1),datas(len:end,:)];
+t3 = dateshift(t1, 'dayofweek', 6,1);
+t2 = dateshift(t3,'start','month');
+tradedate=t2;   
+
+tdif=datenum(t3)-datenum(t2);
+for j=1:length(t3)
+    if 0<tdif(j) &&    tdif(j)<8
+        tradedate(j)=dateshift(t3(j),'dayofweek', 6,3);
+    end
+    if 7<tdif(j) &&    tdif(j)<15
+        tradedate(j)=dateshift(t3(j),'dayofweek', 6,2);
+    end
+    if 14<tdif(j) &&    tdif(j)<22
+        if t3(j)==dateshift(t3(j),'dayofweek', 6,1)
+            if month(dateshift(t3(j),'dayofweek', 6,2))~=month(t3(j))
+                tradedate(j)=dateshift(t3(j),'dayofweek', 6,4);
+            else
+                tradedate(j)=dateshift(t3(j),'dayofweek', 6,5);
+            end
+        else
+            tradedate(j)=dateshift(t3(j),'dayofweek', 6,1);
+        end
+    end
+    if 21<tdif(j) 
+        if month(dateshift(t3(j),'dayofweek', 6,2))~=month(t3(j))
+            tradedate(j)=dateshift(t3(j),'dayofweek', 6,4);
+        else
+            tradedate(j)=dateshift(t3(j),'dayofweek', 6,5);
+        end
+    end
+end
+
+
+%% 处理数据
+future_1=datas(len:end,1);                       %future_1表示当月期货价
+future_2=datas(len:end,2);                       %futur_2表示下月期货价
+date1=tradedate;                                 %date1表示交割日
+index= find(data(:,1)==datenum(tradedate));
+
+
+dilivery_date=data(index,1);
+dilivery_date=datetime(datestr(dilivery_date,'yyyy/mm/dd'));
+dilivery_price_1=data(index,2);
+delivery_future_1=zeros(length(tradedate),1);
+delivery_future_2=zeros(length(tradedate),1);   %每天的当月期货及下月期货在当月交割日的对应价格
+for i=1:length(data(:,1))
+    for j=1:length(index)
+        if tradedate(i)==dilivery_date(j)
+            delivery_future_1(i)=dilivery_price_1(j);
+        end
+    end
+end
+
+    
+dilivery_price_1=data(index,3);
+for i=1:length(data(:,1))
+    for j=1:length(index)
+        if tradedate(i)==dilivery_date(j)
+            delivery_future_2(i)=dilivery_price_1(j);
+        end
+    end
+end
+
+date2=t1;          
+days=datenum(date1)-datenum(date2);        %计算日期间隔
+
+a=repmat(3,[size(future_1),1]);        %假设冲击成本和其他成本设置为3，即C2
+
+
+
+%% 计算无套利区间   %假设冲击成本和其他成本设置为3（即为a），交易手续费率T_rate=0.002
+format shortG
+cost= a+ 0.002*(future_1+future_2)+0.002*(future_1+future_2).*power(r,days);    %这里用当日的两期货价格来计算总的交易成本，即C1
+
+cost_crush=0.001*(future_1+future_2);
+                                            
+format shortG
+upperbound= future_1.*power(r,days)+cost+cost_crush;     %计算无套利区间。这里用的是每日数据，若为频次更高数据，则用指数计算必要增长
+format shortG
+lowerbound=future_1.*power(r,days)-cost-cost_crush;                  
+%% 执行策略
+%正向套利机会
+T_future1=future_1;
+T_future2=future_2;
+T_cost=cost;
+T_delivery_future_1=delivery_future_1;
+T_delivery_future_2=delivery_future_2;
+
+T_days=days(:,1);
+T_future2(future_2<upperbound)=0;              %若期货无套利机会则将期货价格更改为0
+i=find(T_future2(:,1)==0);                     %定位期货价格为0的行
+                              
+T_future1(i,:)=0;
+T_future2(i,:)=0;
+T_delivery_future_1(i,:)=0;
+T_delivery_future_2(i,:)=0;              %将未突破上区间的日期价格设置为0，表示不参与交易
+T_date(i,:)=1;
+T_cost(i,:)=0;
+
+
+
+profit1=(T_future2-T_delivery_future_2+T_delivery_future_1-T_future1-T_cost);                    %计算收益
+return1=profit1./(future_1+future_2);           %计算收益率
+return1=power((1.+return1),360./T_days)-1;
+T_future2=num2cell(T_future2);
+index=find(isnan(return1)==1);
+return1(index)=0;
+R1=sum(return1);
+return1=num2cell(return1);
+ans1=[T_future2,return1];
+R1
+
+
+
+%反向套利
+Trade_future1=future_1;
+Trade_future2=future_2;
+Trade_delivery_future_1=delivery_future_1;
+Trade_delivery_future_2=delivery_future_2;
+Trade_cost=cost;
+Trade_days=days;
+Trade_future2(future_2>lowerbound)=0;          %计算突破下区间的套利机会
+i=find(Trade_future2(:,1)==0);                     %定位期货价格为0的行
+
+Trade_future1(i,:)=0;
+Trade_future2(i,:)=0;
+Trade_delivery_future_1(i,:)=0;
+Trade_delivery_future_2(i,:)=0;        %将未突破下区间的日期价格设置为0，表示不参与交易
+Trade_days(i,:)=1;
+Trade_cost(i,:)=0;
+
+profit2=(Trade_future1-Trade_delivery_future_1+Trade_delivery_future_2-Trade_future2-Trade_cost);                    %计算收益
+return2=profit2./(future_1+future_2);           %计算收益率
+return2=power((1.+return2),360./Trade_days)-1;
+index=find(isnan(return2)==1);
+return2(index)=0;
+R2=sum(return2);
+Trade_future2=num2cell(Trade_future2);
+return2=num2cell(return2);
+ans2=[Trade_future2,return2];
+R2
+
+                                 %显示结果
